@@ -1,6 +1,6 @@
 {
   "name": "yt-transcript",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Adds a /transcript skill that fetches a YouTube video's transcript and formats it into readable paragraphs in the original language.",
   "keywords": ["youtube", "transcript", "captions", "subtitles"],
   "license": "MIT"

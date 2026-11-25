@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Claude Code plugin that fetches YouTube video transcripts.",
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "plugins": [
     {
       "name": "yt-transcript",
       "source": "./",
       "description": "Adds a /transcript skill that fetches a YouTube video's transcript and formats it into readable paragraphs in the original language.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "keywords": ["youtube", "transcript", "captions", "subtitles"],
       "license": "MIT"
     }

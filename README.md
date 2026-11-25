@@ -5,7 +5,8 @@ A Claude Code plugin with a `/transcript` skill. You give it a YouTube URL, it f
 ## Features
 
 - Supported URL formats: `youtube.com/watch?v=…`, `youtu.be/…` and `youtube.com/shorts/…` (`/embed/` and `/live/` also work)
-- Caption priority: the original video language first, then Czech (`cs`), then English (`en`), then any auto-generated track. YouTube doesn't publish a video's spoken language, so the script infers it from the auto-generated track. For videos that only have manually uploaded captions, it goes straight to cs → en.
+- Caption priority: the original video language first, then Czech (`cs`), then English (`en`), then any auto-generated track. If a video has one auto-generated track, that track's language is taken as the original. Auto-dubbed videos get one auto-generated track per dubbed language, so for those the script uses the audio track YouTube marks as the original. For videos that only have manually uploaded captions, it goes straight to cs → en.
+- `--lang CODE` forces a specific caption language, e.g. `python skills/transcript/scripts/get_transcript.py URL --lang en`
 - Clean UTF-8 output on every platform, including Windows consoles, so diacritics display correctly
 - Clear errors and a non-zero exit code when a URL is invalid or a video has no captions
 

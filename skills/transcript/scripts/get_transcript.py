@@ -2,20 +2,24 @@
 """Fetch the transcript of a YouTube video and print it as plain UTF-8 text.
 
 Usage:
-    python get_transcript.py <youtube-url-or-video-id>
+    python get_transcript.py <youtube-url-or-video-id> [--lang CODE]
 
 Caption priority:
-    1. Original video language (the language of YouTube's auto-generated
-       track, which reflects the spoken audio; a manually created track in
-       that language is preferred over the auto-generated one)
+    0. --lang CODE, if given (e.g. --lang en)
+    1. Original video language (a manually created track in that language is
+       preferred over the auto-generated one). It is determined like this:
+       - one auto-generated track: its language is the spoken language;
+       - several auto-generated tracks (YouTube auto-dubbing adds one per
+         dubbed audio track, listed alphabetically, so the first one is NOT
+         the original): the language of the audio track YouTube marks as
+         the original/default.
     2. Czech (cs)
     3. English (en)
     4. Any auto-generated captions
     5. Any captions at all
 
-    Note: YouTube does not expose the spoken language of a video directly.
-    It is inferred from the auto-generated track; videos with only manually
-    uploaded captions fall straight through to cs -> en -> first track.
+    Videos with only manually uploaded captions have no reliable spoken-
+    language signal and fall straight through to cs -> en -> first track.
 
 Exit codes:
     0  success
@@ -25,6 +29,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from urllib.parse import parse_qs, urlparse
@@ -80,8 +85,49 @@ def extract_video_id(url: str) -> str | None:
     return None
 
 
-def pick_transcript(transcript_list):
-    """Choose a transcript according to the priority described above."""
+def _base_lang(code: str) -> str:
+    return code.split(".")[0].split("-")[0].lower()
+
+
+def detect_original_audio_language(api, video_id: str) -> str | None:
+    """Best effort: return the language of the video's original audio track.
+
+    Only needed for auto-dubbed videos (several audio tracks). Reads YouTube's
+    player data through the library's internal fetcher; returns None if that
+    is unavailable or the data has no usable signal, so callers must cope.
+    """
+    try:
+        fetcher = api._fetcher
+        html = fetcher._fetch_video_html(video_id)
+        data = fetcher._fetch_innertube_data(
+            video_id, fetcher._extract_innertube_api_key(html, video_id)
+        )
+    except Exception:
+        return None
+
+    # Signal 1: the stream whose audio track is flagged as the default one.
+    for fmt in (data.get("streamingData") or {}).get("adaptiveFormats") or []:
+        track = fmt.get("audioTrack") or {}
+        if track.get("audioIsDefault") and track.get("id"):
+            return _base_lang(track["id"])
+
+    # Signal 2: the default entry in the captions' audio-track list.
+    captions = (data.get("captions") or {}).get("playerCaptionsTracklistRenderer") or {}
+    tracks = captions.get("audioTracks") or []
+    index = captions.get("defaultAudioTrackIndex")
+    if isinstance(index, int) and 0 <= index < len(tracks):
+        track_id = tracks[index].get("audioTrackId")
+        if track_id:
+            return _base_lang(track_id)
+    return None
+
+
+def pick_transcript(transcript_list, preferred: str | None = None, original_lang_fn=None):
+    """Choose a transcript according to the priority described above.
+
+    original_lang_fn is called (without arguments) only when the original
+    language cannot be read from the track list itself.
+    """
     transcripts = list(transcript_list)
     if not transcripts:
         return None
@@ -90,15 +136,34 @@ def pick_transcript(transcript_list):
     generated = [t for t in transcripts if t.is_generated]
 
     def find(lang: str):
+        lang = _base_lang(lang)
         for group in (manual, generated):
             for t in group:
-                if t.language_code == lang or t.language_code.split("-")[0] == lang:
+                if _base_lang(t.language_code) == lang:
                     return t
         return None
 
-    # 1. Original language: the auto-generated track follows the spoken audio.
-    if generated:
-        original = find(generated[0].language_code)
+    # 0. Explicit request.
+    if preferred:
+        t = find(preferred)
+        if t:
+            return t
+        sys.stderr.write(
+            f"[transcript] warning: no '{preferred}' captions; available: "
+            + ", ".join(t.language_code for t in transcripts)
+            + "\n"
+        )
+
+    # 1. Original language.
+    original_lang = None
+    if len(generated) == 1:
+        # A single auto-generated track transcribes the original audio.
+        original_lang = generated[0].language_code
+    elif len(generated) > 1 and original_lang_fn is not None:
+        # Auto-dubbed video: the track order says nothing; ask YouTube.
+        original_lang = original_lang_fn()
+    if original_lang:
+        original = find(original_lang)
         if original:
             return original
 
@@ -118,21 +183,31 @@ def main(argv: list[str]) -> int:
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
 
-    if len(argv) != 2 or not argv[1].strip():
-        sys.stderr.write("Usage: python get_transcript.py <youtube-url>\n")
-        return 2
+    parser = argparse.ArgumentParser(
+        description="Print the transcript of a YouTube video as plain text."
+    )
+    parser.add_argument("url", help="YouTube URL (watch?v=, youtu.be/, /shorts/) or video ID")
+    parser.add_argument(
+        "--lang", help="caption language to prefer, e.g. en or cs (default: original language)"
+    )
+    args = parser.parse_args(argv[1:])
 
-    video_id = extract_video_id(argv[1])
+    video_id = extract_video_id(args.url) if args.url.strip() else None
     if not video_id:
         sys.stderr.write(
-            f"Error: '{argv[1]}' is not a valid YouTube video URL. Supported formats: "
+            f"Error: '{args.url}' is not a valid YouTube video URL. Supported formats: "
             "youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID\n"
         )
         return 2
 
     try:
-        transcript_list = YouTubeTranscriptApi().list(video_id)
-        transcript = pick_transcript(transcript_list)
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+        transcript = pick_transcript(
+            transcript_list,
+            preferred=args.lang,
+            original_lang_fn=lambda: detect_original_audio_language(api, video_id),
+        )
         if transcript is None:
             sys.stderr.write(f"Error: video {video_id} has no captions available.\n")
             return 1
